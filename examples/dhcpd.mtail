@@ -1,0 +1,143 @@
+# Copyright 2011 Google Inc. All Rights Reserved.
+# This file is available under the Apache license.
+
+# Define the exported metric names.  The `by' keyword indicates the metric has
+# dimensions.  For example, `request_total' counts the frequency of each
+# request's "command".  The name `command' will be exported as the label name
+# for the metric.  The command provided in the code below will be exported as
+# the label value.
+counter request_total by command
+counter config_file_errors
+counter peer_disconnects
+counter dhcpdiscovers by mac
+counter bind_xid_mismatch
+counter duplicate_lease
+counter bad_udp_checksum
+counter unknown_subnet
+counter dhcpdiscover_nofree by network
+counter unknown_lease by ip
+counter update_rejected
+counter failover_peer_timeout
+counter ip_already_in_use
+counter ip_abandoned by reason
+counter invalid_state_transition
+counter negative_poolreq by pool
+counter lease_conflicts
+
+# The `syslog' decorator defines a procedure.  When a block of mtail code is
+# "decorated", it is called before entering the block.  The block is entered
+# when the keyword `next' is reached.
+def syslog {
+  /^(?P<date>(?P<legacy_date>\w+\s+\d+\s+\d+:\d+:\d+)|(?P<rfc3339_date>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d+[+-]\d{2}:\d{2}))/ +
+  /\s+(?:\w+@)?(?P<hostname>[\w\.-]+)\s+(?P<application>[\w\.-]+)(?:\[(?P<pid>\d+)\])?:\s+(?P<message>.*)/ {
+    # If the legacy_date regexp matched, try this format.
+    len($legacy_date) > 0 {
+      strptime($2, "Jan _2 15:04:05")
+    }
+    # If the RFC3339 style matched, parse it this way.
+    len($rfc3339_date) > 0 {
+      strptime($rfc3339_date, "2006-01-02T03:04:05-0700")
+    }
+    # Call into the decorated block
+    next
+  }
+}
+
+# Define some pattern constants for reuse in the patterns below.
+const IP /\d+(\.\d+){3}/
+const MATCH_IP /(?P<ip>/ + IP + /)/
+const MATCH_NETWORK /(?P<network>\d+(\.\d+){1,3}\/\d+)/
+const MATCH_MAC /(?P<mac>([\da-f]{2}:){5}[\da-f]{2})/
+
+@syslog {
+    # Request
+    /(balanced|balancing|BOOTREPLY|BOOTREQUEST|DHCPACK|DHCPDECLINE|DHCPDISCOVER|DHCPINFORM|DHCPNAK|DHCPOFFER|DHCPRELEASE|DHCPREQUEST)/ {
+        # The lowercased name of the command matched in the regex is used to
+        # count the frequency of each command.  An external collector can use
+        # this to compute the rate of each command independently.
+        request_total[tolower($1)]++
+
+        # DHCP Discover
+        /DHCPDISCOVER from / + MATCH_MAC {
+            # Counts the discovery requests per mac address, which can help
+            # identify bad clients on the network.
+            dhcpdiscovers[$mac]++
+
+            /network / + MATCH_NETWORK + /: no free leases/ {
+                # If the range is full, your clients may be having a bad time.
+                dhcpdiscover_nofree[$network]++
+            }
+        }
+
+    }
+
+    # Config file errors
+    /Configuration file errors encountered -- exiting/ {
+        # Counting config parse errors can he useful for detecting bad config
+        # pushes that made it to production.
+        config_file_errors++
+    }
+
+    # Peer disconnects
+    /peer ([^:]+): disconnected/ {
+        peer_disconnects++
+    }
+
+    # XID mismatches
+    /bind update on / + IP + / got ack from (?P<group>\w+): xid mismatch./ {
+        bind_xid_mismatch++
+    }
+
+    # Duplicate lease
+    /uid lease / + MATCH_IP + / for client / + MATCH_MAC + / is duplicate on / + MATCH_NETWORK {
+        duplicate_lease++
+    }
+
+    # Bad UDP Checksum
+    /(?P<count>\d+) bad udp checksums in \d+ packets/ {
+        bad_udp_checksum += $count
+    }
+
+    # Unknown subnet
+    /DHCPDISCOVER from / + MATCH_MAC + / via / + IP + /: unknown network segment/ {
+        unknown_subnet++
+    }
+
+    # Unknown lease
+    /DHCPREQUEST for / + IP + /\(/ + IP + /\) from / + MATCH_MAC + / via / + IP + /: unknown lease / + MATCH_IP {
+        unknown_lease[$ip]++
+    }
+
+    # Update rejected
+    /bind update on \S+ from \S+ rejected: incoming update is less critical than the outgoing update/ {
+        update_rejected++
+    }
+
+    /timeout waiting for failover peer \S+/ {
+        failover_peer_timeout++
+    }
+
+    /ICMP Echo reply while lease / + IP + /valid/ {
+        ip_already_in_use++
+    }
+
+    /unexpected ICMP Echo reply from / + IP {
+        ip_already_in_use++
+    }
+
+    /Abandoning IP address / + IP + /: (?P<reason>.*)/ {
+        ip_abandoned[$reason]++
+    }
+
+    /bind update on \S+ from \S+ rejected: / + IP + /: invalid state transition/ {
+        invalid_state_transition++
+    }
+
+    /peer (?P<pool>[^:]+): Got POOLREQ, answering negatively!/ {
+        negative_poolreq[$pool]++
+    }
+
+    /Lease conflict at/ {
+        lease_conflicts++
+    }
+}

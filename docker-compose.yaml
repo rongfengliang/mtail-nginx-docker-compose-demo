@@ -1,0 +1,10 @@
+version: "3"
+services:
+  nginx-log:
+    build: ./
+    ports:
+    - "8090:80"
+    - "3903:3903"
+    volumes:
+    - "./examples/linecount.mtail:/progs/linecount.mtail"
+    
