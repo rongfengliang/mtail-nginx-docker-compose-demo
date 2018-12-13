@@ -7,6 +7,7 @@ services:
     - "3903:3903"
     volumes:
     - "./examples/linecount.mtail:/progs/linecount.mtail"
+    - $PWD:/etc/promtail
   loki:
     image: grafana/loki:master
     ports:
